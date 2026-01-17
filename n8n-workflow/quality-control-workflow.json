@@ -1,0 +1,306 @@
+{
+  "name": "Agricultural Quality Control with Computer Vision",
+  "nodes": [
+    {
+      "id": "streamlit-webhook",
+      "name": "📱 Streamlit Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "quality-control-webhook",
+      "parameters": {
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "process-product-data",
+      "name": "⚙️ Process Product Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "parameters": {
+        "functionCode": "// Procesa datos del producto agrícola\nconst productData = $input.first().json;\n\n// Validar datos requeridos\nconst requiredFields = ['product_type', 'batch_id', 'images'];\nconst missingFields = requiredFields.filter(field => !productData[field]);\n\nif (missingFields.length > 0) {\n  throw new Error(`Campos requeridos faltantes: ${missingFields.join(', ')}`);\n}\n\n// Validar imágenes\nif (!Array.isArray(productData.images) || productData.images.length === 0) {\n  throw new Error('Se requiere al menos una imagen para el análisis');\n}\n\n// Configurar estándares de calidad por producto\nconst qualityStandards = {\n  'Manzana': {\n    size_categories: ['Pequeña', 'Mediana', 'Grande', 'Extra Grande'],\n    size_thresholds: [60, 75, 85],\n    defect_categories: ['Punto Negro', 'Golpe', 'Podredumbre', 'Corte'],\n    max_defects_per_unit: 2\n  },\n  'Naranja': {\n    size_categories: ['Pequeña', 'Mediana', 'Grande'],\n    size_thresholds: [65, 80],\n    defect_categories: ['Mancha', 'Piel Dañada', 'Podredumbre'],\n    max_defects_per_unit: 3\n  },\n  'Tomate': {\n    size_categories: ['Cherry', 'Mediano', 'Grande'],\n    size_thresholds: [40, 60],\n    defect_categories: ['Rajadura', 'Golpe', 'Podredumbre'],\n    max_defects_per_unit: 2\n  },\n  'Papa': {\n    size_categories: ['Pequeña', 'Mediana', 'Grande'],\n    size_thresholds: [45, 65],\n    defect_categories: ['Ojo Profundo', 'Verde', 'Daño Mecánico'],\n    max_defects_per_unit: 4\n  }\n};\n\nconst productType = productData.product_type;\nconst standards = qualityStandards[productType] || qualityStandards['Manzana'];\n\nreturn [{\n  ...productData,\n  quality_standards: standards,\n  analysis_id: `qc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n  processed_at: new Date().toISOString(),\n  operator_id: productData.operator_id || `operator_${Math.random().toString(36).substr(2, 9)}`,\n  expected_quality: productData.expected_quality || 'Premium',\n  total_units: productData.total_units || productData.images.length\n}];"
+      }
+    },
+    {
+      "id": "computer-vision-ai",
+      "name": "👁️ Computer Vision AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [680, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://computer-vision:8004/analyze-image",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "image_data",
+              "value": "={{ $json.images[0] }}"
+            },
+            {
+              "name": "product_type",
+              "value": "={{ $json.product_type }}"
+            },
+            {
+              "name": "analysis_id",
+              "value": "={{ $json.analysis_id }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "defect-detection",
+      "name": "🔍 Defect Detection",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "parameters": {
+        "functionCode": "// Procesar resultados de visión artificial\nconst cvResults = $input.first().json;\nconst productData = $node[\"Process Product Data\"].json;\n\n// Extraer defectos detectados\nconst detectedDefects = cvResults.defects || [];\nconst sizeMeasurements = cvResults.size_measurements || {};\n\n// Clasificar defectos por severidad\nconst defectSeverity = {\n  'minor': ['Punto Negro', 'Mancha Leve'],\n  'moderate': ['Golpe', 'Corte Pequeño', 'Rajadura'],\n  'severe': ['Podredumbre', 'Daño Severo', 'Verde']\n};\n\nconst classifiedDefects = detectedDefects.map(defect => {\n  let severity = 'minor';\n  for (const [sev, types] of Object.entries(defectSeverity)) {\n    if (types.includes(defect.type)) {\n      severity = sev;\n      break;\n    }\n  }\n  \n  return {\n    ...defect,\n    severity: severity,\n    area_percentage: defect.area ? (defect.area / cvResults.total_area * 100).toFixed(2) : 0\n  };\n});\n\n// Determinar categoría de tamaño\nconst diameter = sizeMeasurements.diameter_mm || 0;\nconst sizeThresholds = productData.quality_standards.size_thresholds;\nconst sizeCategories = productData.quality_standards.size_categories;\n\nlet sizeCategory = sizeCategories[0]; // Por defecto la más pequeña\nfor (let i = 0; i < sizeThresholds.length; i++) {\n  if (diameter > sizeThresholds[i]) {\n    sizeCategory = sizeCategories[i + 1];\n  }\n}\n\n// Calcular score de calidad\nconst baseScore = 100;\nlet qualityScore = baseScore;\n\n// Penalizaciones por defectos\nclassifiedDefects.forEach(defect => {\n  const severityPenalties = { 'minor': 5, 'moderate': 15, 'severe': 40 };\n  qualityScore -= severityPenalties[defect.severity] || 10;\n});\n\n// Penalización por tamaño fuera de estándar\nif (sizeCategory === 'Pequeña') qualityScore -= 10;\n\nqualityScore = Math.max(0, qualityScore);\n\n// Determinar grado de calidad\nlet qualityGrade = 'Premium';\nif (qualityScore >= 90) qualityGrade = 'Premium';\nelse if (qualityScore >= 75) qualityGrade = 'Estándar';\nelse if (qualityScore >= 60) qualityGrade = 'Comercial';\nelse qualityGrade = 'Rechazado';\n\nreturn [{\n  ...productData,\n  ...cvResults,\n  \n  // Análisis de defectos\n  defects: classifiedDefects,\n  total_defects: classifiedDefects.length,\n  severe_defects: classifiedDefects.filter(d => d.severity === 'severe').length,\n  \n  // Clasificación de tamaño\n  size_category: sizeCategory,\n  measured_diameter: diameter,\n  \n  // Score de calidad\n  quality_score: qualityScore,\n  quality_grade: qualityGrade,\n  \n  // Timestamps\n  analyzed_at: new Date().toISOString(),\n  processing_time_ms: cvResults.processing_time || 0\n}];"
+      }
+    },
+    {
+      "id": "batch-analysis",
+      "name": "📊 Batch Analysis",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 300],
+      "parameters": {
+        "functionCode": "// Procesar lote completo y generar estadísticas\nconst singleAnalysis = $input.first().json;\nconst productData = $node['Process Product Data'].json;\n\n// En producción, esto procesaría múltiples imágenes\n// Por ahora simulamos un lote basado en una imagen\nconst batchSize = productData.total_units || 100;\n\n// Simular análisis de lote completo basado en la primera imagen\nconst batchResults = {\n  total_units: batchSize,\n  analyzed_units: 1, // En demo, solo una imagen\n  \n  // Distribución de calidades\n  quality_distribution: {\n    'Premium': Math.floor(batchSize * 0.4),\n    'Estándar': Math.floor(batchSize * 0.35),\n    'Comercial': Math.floor(batchSize * 0.15),\n    'Rechazado': Math.floor(batchSize * 0.1)\n  },\n  \n  // Estadísticas de defectos\n  defect_statistics: {\n    total_defects: Math.floor(batchSize * 2.5), // Promedio\n    defects_per_unit: 2.5,\n    severe_defects: Math.floor(batchSize * 0.3),\n    common_defect_types: ['Punto Negro', 'Golpe', 'Mancha']\n  },\n  \n  // Distribución de tamaños\n  size_distribution: {\n    'Pequeña': Math.floor(batchSize * 0.2),\n    'Mediana': Math.floor(batchSize * 0.5),\n    'Grande': Math.floor(batchSize * 0.25),\n    'Extra Grande': Math.floor(batchSize * 0.05)\n  },\n  \n  // Métricas generales\n  average_quality_score: 82.5,\n  compliance_rate: 0.89,\n  rejection_rate: 0.11\n};\n\n// Generar alertas basadas en análisis\nconst alerts = [];\n\nif (batchResults.rejection_rate > 0.15) {\n  alerts.push({\n    type: 'high_rejection_rate',\n    priority: 'high',\n    message: `Tasa de rechazo alta: ${(batchResults.rejection_rate * 100).toFixed(1)}%`,\n    recommendation: 'Revisar proceso de cosecha y almacenamiento'\n  });\n}\n\nif (batchResults.defect_statistics.severe_defects > batchSize * 0.2) {\n  alerts.push({\n    type: 'excessive_severe_defects',\n    priority: 'high',\n    message: 'Defectos severos por encima del límite permitido',\n    recommendation: 'Inspeccionar equipos de manejo y transporte'\n  });\n}\n\nif (batchResults.average_quality_score < 75) {\n  alerts.push({\n    type: 'low_quality_score',\n    priority: 'medium',\n    message: `Score de calidad promedio bajo: ${batchResults.average_quality_score}`,\n    recommendation: 'Revisar estándares de calidad y capacitación'\n  });\n}\n\nreturn [{\n  ...singleAnalysis,\n  \n  // Resultados del lote\n  batch_analysis: batchResults,\n  \n  // Alertas\n  alerts: alerts,\n  critical_alerts: alerts.filter(alert => alert.priority === 'high'),\n  \n  // Resumen ejecutivo\n  executive_summary: {\n    overall_quality: batchResults.average_quality_score >= 80 ? 'Excelente' : 'Aceptable',\n    main_issues: alerts.map(alert => alert.type),\n    recommendation: alerts.length > 0 ? 'Requiere atención' : 'Dentro de estándares',\n    batch_status: batchResults.rejection_rate > 0.15 ? 'En Revisión' : 'Aprobado'\n  },\n  \n  // Timestamps finales\n  batch_completed_at: new Date().toISOString(),\n  report_generated_at: new Date().toISOString()\n}];"
+      }
+    },
+    {
+      "id": "supabase-storage",
+      "name": "💾 Supabase Storage",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1340, 300],
+      "parameters": {
+        "operation": "create",
+        "table": "quality_control",
+        "data": {
+          "analysis_id": "={{ $json.analysis_id }}",
+          "batch_id": "={{ $json.batch_id }}",
+          "product_type": "={{ $json.product_type }}",
+          "operator_id": "={{ $json.operator_id }}",
+          "quality_score": "={{ $json.quality_score }}",
+          "quality_grade": "={{ $json.quality_grade }}",
+          "size_category": "={{ $json.size_category }}",
+          "defects_data": "={{ $json.defects }}",
+          "size_measurements": "={{ $json.size_measurements }}",
+          "color_analysis": "={{ $json.color_analysis }}",
+          "batch_analysis": "={{ $json.batch_analysis }}",
+          "alerts": "={{ $json.alerts }}",
+          "executive_summary": "={{ $json.executive_summary }}",
+          "analyzed_at": "={{ $json.analyzed_at }}",
+          "batch_completed_at": "={{ $json.batch_completed_at }}"
+        },
+        "returnFields": "id,analysis_id,quality_grade"
+      }
+    },
+    {
+      "id": "check-critical-alerts",
+      "name": "⚠️ Check Critical Alerts",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 200],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true
+          },
+          "conditions": [
+            {
+              "id": "critical-alert-check",
+              "leftValue": "={{ $json.critical_alerts && $json.critical_alerts.length > 0 }}",
+              "rightValue": "true",
+              "operator": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "send-sms-alert",
+      "name": "💬 Send SMS Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1780, 200],
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "https://api.twilio.com/2010-04-01/Accounts/{{ $env.TWILIO_ACCOUNT_SID }}/Messages.json",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "To",
+              "value": "={{ $json.supervisor_phone }}"
+            },
+            {
+              "name": "From",
+              "value": "={{ $env.TWILIO_PHONE_NUMBER }}"
+            },
+            {
+              "name": "Body",
+              "value": "🚨 ALERTA CALIDAD: Lote {{ $json.batch_id }} tiene {{ $json.critical_alerts.length }} alertas críticas. Tasa rechazo: {{ ($json.batch_analysis.rejection_rate * 100).toFixed(1) }}%. Requiere revisión inmediata."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "prepare-pdf-report",
+      "name": "📄 Prepare PDF Report",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1560, 400],
+      "parameters": {
+        "functionCode": "// Generar datos para reporte PDF\nconst analysisData = $input.first().json;\n\n// Preparar datos estructurados para PDF\nconst pdfData = {\n  analysis_id: analysisData.analysis_id,\n  batch_id: analysisData.batch_id,\n  product_type: analysisData.product_type,\n  timestamp: analysisData.batch_completed_at,\n  \n  // Métricas clave\n  metrics: {\n    total_units: analysisData.batch_analysis.total_units,\n    average_score: analysisData.batch_analysis.average_quality_score,\n    rejection_rate: analysisData.batch_analysis.rejection_rate,\n    compliance_rate: analysisData.batch_analysis.compliance_rate\n  },\n  \n  // Distribuciones\n  quality_distribution: analysisData.batch_analysis.quality_distribution,\n  size_distribution: analysisData.batch_analysis.size_distribution,\n  \n  // Defectos\n  defect_statistics: analysisData.batch_analysis.defect_statistics,\n  \n  // Alertas\n  alerts: analysisData.alerts,\n  \n  // Resumen\n  executive_summary: analysisData.executive_summary\n};\n\nreturn [{\n  ...analysisData,\n  pdf_report_data: pdfData\n}];"
+      }
+    },
+    {
+      "id": "final-response",
+      "name": "✅ Final Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2000, 300],
+      "parameters": {
+        "functionCode": "// Esta función será la respuesta final del webhook\nconst data = $input.first().json;\n\nreturn [{\n  status: \"success\",\n  message: \"Análisis de calidad completado exitosamente\",\n  analysis_id: data.analysis_id,\n  batch_id: data.batch_id,\n  product_type: data.product_type,\n  quality_grade: data.quality_grade,\n  quality_score: data.quality_score,\n  size_category: data.size_category,\n  total_defects: data.total_defects,\n  batch_status: data.executive_summary?.batch_status || 'Aprobado',\n  recommendation: data.executive_summary?.recommendation || 'Dentro de estándares',\n  alerts_count: data.alerts?.length || 0,\n  critical_alerts_count: data.critical_alerts?.length || 0,\n  timestamp: new Date().toISOString(),\n  full_analysis: data\n}];"
+      }
+    }
+  ],
+  "connections": {
+    "📱 Streamlit Webhook": {
+      "main": [
+        [
+          {
+            "node": "⚙️ Process Product Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚙️ Process Product Data": {
+      "main": [
+        [
+          {
+            "node": "👁️ Computer Vision AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "👁️ Computer Vision AI": {
+      "main": [
+        [
+          {
+            "node": "🔍 Defect Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔍 Defect Detection": {
+      "main": [
+        [
+          {
+            "node": "📊 Batch Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📊 Batch Analysis": {
+      "main": [
+        [
+          {
+            "node": "💾 Supabase Storage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 Supabase Storage": {
+      "main": [
+        [
+          {
+            "node": "⚠️ Check Critical Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "📄 Prepare PDF Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚠️ Check Critical Alerts": {
+      "main": [
+        [
+          {
+            "node": "💬 Send SMS Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "✅ Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💬 Send SMS Alert": {
+      "main": [
+        [
+          {
+            "node": "✅ Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📄 Prepare PDF Report": {
+      "main": [
+        [
+          {
+            "node": "✅ Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
